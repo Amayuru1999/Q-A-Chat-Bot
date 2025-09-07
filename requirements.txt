@@ -1,15 +1,27 @@
+# Core
 langchain
 langchain-chroma
 langchain-community
 langchain-openai
+langchain-ollama
+chromadb
 rank-bm25
-torch
-sentence-transformers==2.7.0
 python-dotenv
 pymupdf
-chromadb
 uvicorn
 fastapi
 numpy
-transformers==4.40.2
 streamlit
+transformers==4.40.2
+sentence-transformers==2.7.0
+
+# Local LLM and OCR
+ollama
+pytesseract
+Pillow
+
+# Torch (installing from pip works on many setups; if it fails, see notes below)
+torch
+
+paddleocr
+paddlepaddle

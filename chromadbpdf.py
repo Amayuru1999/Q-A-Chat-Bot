@@ -1,48 +1,54 @@
-
 import os
 import io
 import re
 import uuid
-import base64
 import logging
 import concurrent.futures
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Optional
 
-import fitz 
+import fitz  # PyMuPDF
 from PIL import Image
 import torch
 
 from dotenv import load_dotenv
-load_dotenv(override=True)  
+load_dotenv(override=True)
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# Vision OCR 
-OPENAI_OCR_MODEL = os.getenv("OPENAI_OCR_MODEL", "gpt-4o-mini")  
-OCR_DPI = int(os.getenv("OCR_DPI", "220"))                       
-OCR_MAX_RETRIES = 3
-OCR_BACKOFF = 2.0  
-OCR_PROMPT = os.getenv(
-    "OCR_PROMPT",
-    "Extract all legible body text from this legal page. Preserve reading order. "
-    "Ignore repeated headers/footers and watermarks. Return plain UTF-8 text."
-)
+# ---------------- Local OCR config ----------------
+# Choose OCR engine via env:
+#   OCR_BACKEND=tesseract|paddle (default: tesseract)
+#   OCR_DPI=220 (render DPI for scanned pages)
+#   OCR_LANG=eng (Tesseract languages, e.g., "eng+deu")
+#   PADDLE_LANG=en (PaddleOCR language code)
+#   PADDLE_USE_ANGLE=1|0 (angle classification)
+OCR_BACKEND = os.getenv("OCR_BACKEND", "tesseract").strip().lower()
+OCR_DPI = int(os.getenv("OCR_DPI", "220"))
+OCR_LANG = os.getenv("OCR_LANG", "eng")
+PADDLE_LANG = os.getenv("PADDLE_LANG", "en")
+PADDLE_USE_ANGLE = bool(int(os.getenv("PADDLE_USE_ANGLE", "1")))
+
+# Try import OCR backends
+_has_pytesseract = False
+_has_paddle = False
+try:
+    import pytesseract
+    _has_pytesseract = True
+except Exception:
+    logging.info("pytesseract not available — install it for Tesseract OCR.")
 
 try:
-    from openai import OpenAI
-    openai_client: Optional["OpenAI"] = OpenAI()  
-    _has_openai = True
-except Exception as _e:
-    logging.warning("OpenAI SDK not available or OPENAI_API_KEY not set. OCR fallback will be disabled.")
-    openai_client = None
-    _has_openai = False
+    from paddleocr import PaddleOCR
+    _has_paddle = True
+except Exception:
+    if OCR_BACKEND == "paddle":
+        logging.info("PaddleOCR not available — `pip install paddleocr paddlepaddle` for Paddle OCR.")
 
 # ---------------- Helpers ----------------
 def normalize_ws(text: str) -> str:
@@ -56,45 +62,70 @@ def render_page_png(page: fitz.Page, dpi: int = OCR_DPI) -> bytes:
     pix = page.get_pixmap(matrix=mat, alpha=False)
     return pix.tobytes("png")
 
-def ocr_png_with_openai(img_bytes: bytes) -> str:
-    """OCR a PNG image using OpenAI Vision. Returns normalized text or '' on failure."""
-    if not _has_openai:
+# ---------------- OCR backends ----------------
+_paddle_ocr: Optional["PaddleOCR"] = None
+
+def _ensure_paddle():
+    global _paddle_ocr
+    if _paddle_ocr is None and _has_paddle:
+        logging.info(f"Initializing PaddleOCR(lang={PADDLE_LANG}, angle_cls={PADDLE_USE_ANGLE})")
+        _paddle_ocr = PaddleOCR(use_angle_cls=PADDLE_USE_ANGLE, lang=PADDLE_LANG, show_log=False)
+    return _paddle_ocr
+
+def ocr_with_tesseract(img_bytes: bytes) -> str:
+    if not _has_pytesseract:
         return ""
-    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-    last_err = None
-    for attempt in range(1, OCR_MAX_RETRIES + 1):
-        try:
-            resp = openai_client.chat.completions.create(
-                model=OPENAI_OCR_MODEL,
-                temperature=0,
-                messages=[
-                    {"role": "system", "content": "You are an OCR assistant for legal documents. Return only extracted text."},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": OCR_PROMPT},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}" }}
-                        ]
-                    }
-                ]
-            )
-            text = resp.choices[0].message.content or ""
-            return normalize_ws(text)
-        except Exception as e:
-            last_err = e
-            if attempt < OCR_MAX_RETRIES:
-                backoff = (OCR_BACKOFF ** (attempt - 1))
-                logging.warning(f"OCR attempt {attempt} failed ({e}). Retrying in {backoff:.1f}s...")
-                import time; time.sleep(backoff)
-    logging.error(f"OCR failed after {OCR_MAX_RETRIES} attempts: {last_err}")
-    return ""
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        txt = pytesseract.image_to_string(img, lang=OCR_LANG)
+        return normalize_ws(txt or "")
+    except Exception as e:
+        logging.warning(f"Tesseract OCR failed: {e}")
+        return ""
 
+def ocr_with_paddle(img_bytes: bytes) -> str:
+    if not _has_paddle:
+        return ""
+    try:
+        import numpy as np
+        ocr_engine = _ensure_paddle()
+        if ocr_engine is None:
+            return ""
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        arr = np.array(img)
+        result = ocr_engine.ocr(arr, cls=PADDLE_USE_ANGLE)
+        lines = []
+        if result:
+            for page in result:
+                if not page:
+                    continue
+                for line in page:
+                    if len(line) >= 2 and line[1]:
+                        lines.append(line[1][0])
+        return normalize_ws("\n".join(lines))
+    except Exception as e:
+        logging.warning(f"PaddleOCR failed: {e}")
+        return ""
 
+def ocr_png_locally(img_bytes: bytes) -> str:
+    """Try requested backend first, then fall back to the other if available."""
+    if OCR_BACKEND == "paddle":
+        text = ocr_with_paddle(img_bytes)
+        if text:
+            return text
+        return ocr_with_tesseract(img_bytes)
+    else:
+        text = ocr_with_tesseract(img_bytes)
+        if text:
+            return text
+        return ocr_with_paddle(img_bytes)
+
+# ---------------- Extraction ----------------
 def extract_text_from_pdf(pdf_path: str) -> List[Tuple[int, str]]:
     """
     Extract text from a PDF, page by page.
     - Uses PyMuPDF text first.
-    - Falls back to OpenAI OCR if the page text is empty/very short (scanned).
+    - Falls back to LOCAL OCR if the page text is empty/very short (scanned).
     """
     try:
         doc = fitz.open(pdf_path)
@@ -102,11 +133,11 @@ def extract_text_from_pdf(pdf_path: str) -> List[Tuple[int, str]]:
         for page_num, page in enumerate(doc, start=1):
             text = (page.get_text("text") or "").strip()
 
-            # do OCR for scanned images.
+            # If likely scanned / low text, try OCR
             if len(text) < 25:
                 try:
                     img_bytes = render_page_png(page, dpi=OCR_DPI)
-                    ocr_text = ocr_png_with_openai(img_bytes)
+                    ocr_text = ocr_png_locally(img_bytes)
                     if len(ocr_text) > len(text):
                         text = ocr_text
                 except Exception as e:
@@ -139,7 +170,7 @@ def process_pdf(pdf_file: str, pdf_dir: str, text_splitter: RecursiveCharacterTe
     for page_num, text in pages:
         split_chunks = [c.strip() for c in text_splitter.split_text(text)]
         for i, chunk in enumerate(split_chunks):
-            if len(chunk) < 30:  
+            if len(chunk) < 30:
                 continue
             chunks.append(chunk)
             metadata_list.append({
@@ -148,10 +179,15 @@ def process_pdf(pdf_file: str, pdf_dir: str, text_splitter: RecursiveCharacterTe
                 "page_number": page_num,
                 "chunk_id": i,
                 "document_id": document_id,
-                "document_type": "Academic Document",  
-                "subject": "General",          
+                "document_type": "Academic Document",
+                "subject": "General",
                 "upload_date": upload_date,
-                "content_type": "lecture_notes" if "lecture" in pdf_file.lower() else "textbook" if "textbook" in pdf_file.lower() else "research_paper" if "paper" in pdf_file.lower() else "general"
+                "content_type": (
+                    "lecture_notes" if "lecture" in pdf_file.lower()
+                    else "textbook" if "textbook" in pdf_file.lower()
+                    else "research_paper" if "paper" in pdf_file.lower()
+                    else "general"
+                )
             })
             ids.append(f"{document_id}-p{page_num}-c{i}")
 
@@ -177,7 +213,7 @@ def process_all_pdfs():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logging.info(f"Using device: {device}")
 
-    # Embeddings - Using a general academic model suitable for university content
+    # Embeddings (local)
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
         model_kwargs={"device": device},
@@ -201,9 +237,11 @@ def process_all_pdfs():
     # Collect all chunks
     all_chunks, all_metadatas, all_ids = [], [], []
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        results = executor.map(lambda pdf: process_pdf(pdf, pdf_dir, text_splitter), pdf_files)
+    def _work(pdf):
+        return process_pdf(pdf, pdf_dir, text_splitter)
 
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = executor.map(_work, pdf_files)
         for pdf_file, (chunks, metadatas, ids, document_id) in zip(pdf_files, results):
             if not chunks:
                 logging.warning(f"Skipping empty PDF (no extractable text): {pdf_file}")
@@ -219,8 +257,6 @@ def process_all_pdfs():
 
     logging.info(f"Adding {len(all_chunks)} chunks to ChromaDB (this embeds; may take a while)...")
     vector_db.add_texts(texts=all_chunks, metadatas=all_metadatas, ids=all_ids)
-
-    # ChromaDB automatically persists data
 
     try:
         collection_size = vector_db._collection.count()

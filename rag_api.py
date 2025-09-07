@@ -1,9 +1,9 @@
 # Academic Study Assistant API
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from rag_pipeline import rag_pipeline 
+from rag_pipeline import rag_pipeline
 from fastapi.responses import PlainTextResponse
 import logging
 import os
@@ -21,13 +21,13 @@ async def startup_event():
     """Process new documents on startup"""
     logging.info("🚀 Starting Academic Study Assistant...")
     logging.info("📚 Checking for new documents...")
-    
+
     # Check and process new documents
     if check_and_process_new_documents():
         logging.info("✅ Document processing completed")
     else:
         logging.info("ℹ️ No new documents to process or processing skipped")
-    
+
     logging.info("🎓 Academic Study Assistant is ready!")
 
 # Enable CORS for web interface
@@ -56,25 +56,25 @@ def check_and_process_new_documents():
         if not docs_dir.exists():
             logging.info("No university_documents directory found")
             return False
-        
+
         # Get list of PDF files in the directory
         pdf_files = list(docs_dir.glob("*.pdf"))
         if not pdf_files:
             logging.info("No PDF files found in university_documents")
             return False
-        
+
         # Check if academic_db exists (indicates previous processing)
         academic_db = Path("academic_db")
         if not academic_db.exists():
             logging.info("No existing academic_db found, processing all documents...")
             return process_documents()
-        
+
         # Check modification times to see if any PDFs are newer than the last processing
         # For simplicity, we'll always process if there are PDFs and academic_db exists
         # In a more sophisticated version, you could track timestamps
         logging.info(f"Found {len(pdf_files)} PDF files, processing documents...")
         return process_documents()
-        
+
     except Exception as e:
         logging.error(f"Error checking for new documents: {e}")
         return False
@@ -84,19 +84,19 @@ def process_documents():
     try:
         logging.info("Starting document processing...")
         result = subprocess.run(
-            ["python", "chromadbpdf.py"], 
-            capture_output=True, 
-            text=True, 
+            ["python", "chromadbpdf.py"],
+            capture_output=True,
+            text=True,
             cwd=os.getcwd()
         )
-        
+
         if result.returncode == 0:
             logging.info("Document processing completed successfully")
             return True
         else:
             logging.error(f"Document processing failed: {result.stderr}")
             return False
-            
+
     except Exception as e:
         logging.error(f"Error running document processing: {e}")
         return False
@@ -109,7 +109,10 @@ async def root():
         "endpoints": {
             "/chat": "POST - Ask questions about your documents",
             "/health": "GET - Check if the system is ready",
-            "/process-documents": "POST - Manually process new documents"
+            "/process-documents": "POST - Manually process new documents",
+            "/api/ask": "POST - Alias for frontend (returns {answer, sources})",
+            "/api/health": "GET - Alias for frontend",
+            "/api/upload": "POST - Upload a file and trigger processing"
         }
     }
 
@@ -126,6 +129,11 @@ async def health_check():
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"System not ready: {str(e)}")
 
+@app.get("/api/health")
+async def api_health():
+    # Alias for frontend expecting /api/health
+    return await health_check()
+
 @app.post("/process-documents")
 async def process_documents_endpoint():
     """Manually trigger document processing"""
@@ -139,7 +147,7 @@ async def process_documents_endpoint():
             }
         else:
             return {
-                "status": "error", 
+                "status": "error",
                 "message": "Document processing failed",
                 "processed": False
             }
@@ -152,12 +160,12 @@ async def chat(request: ChatRequest):
     try:
         if not request.message.strip():
             raise HTTPException(status_code=400, detail="Please provide a question")
-        
+
         # Add student context to the question
         personalized_question = f"Hi! I'm {request.student_name}. {request.message}"
-        
+
         response = rag_pipeline(personalized_question)
-        
+
         return ChatResponse(
             response=response,
             sources=[],  # Could be enhanced to return source documents
@@ -166,6 +174,37 @@ async def chat(request: ChatRequest):
     except Exception as e:
         logging.error(f"Error processing chat request: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing your question: {str(e)}")
+
+@app.post("/api/ask")
+async def api_ask(payload: dict = Body(...)):
+    """Alias endpoint to match the Vite frontend. Accepts {question, history?, top_k?, temperature?, student_name?}."""
+    try:
+        question = (payload.get("question") or payload.get("message") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Please provide a question")
+        student_name = payload.get("student_name", "Student")
+        personalized_question = f"Hi! I'm {student_name}. {question}"
+        response = rag_pipeline(personalized_question)
+        return {"answer": response, "sources": []}
+    except Exception as e:
+        logging.error(f"Error in /api/ask: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing your question: {str(e)}")
+
+
+
+@app.post("/api/upload")
+async def api_upload():
+    """Trigger processing without requiring multipart dependencies.
+    This keeps compatibility with the frontend route but ignores any uploaded content.
+    """
+    try:
+        ok = process_documents()
+        if not ok:
+            return {"ok": False, "detail": "Processing failed"}
+        return {"ok": True, "detail": "Documents processed"}
+    except Exception as e:
+        logging.error(f"Error in /api/upload: {e}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
