@@ -205,7 +205,19 @@ async def api_upload():
     except Exception as e:
         logging.error(f"Error in /api/upload: {e}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
-
+@app.post("/api/math")
+async def api_math(payload: dict = Body(...)):
+    try:
+        question = (payload.get("question") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Please provide a math problem")
+        student_name = payload.get("student_name", "Student")
+        personalized_q = f"Hi! I'm {student_name}. {question}"
+        response = rag_pipeline(personalized_q, mode="math")
+        return {"answer": response, "sources": []}
+    except Exception as e:
+        logging.error(f"Error in /api/math: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing math question: {str(e)}")
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000) 

@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react'
 import type { Message, AskResponse } from '@/types'
-import { ask, upload } from '@/lib/api'
+import { askMath, upload } from '@/lib/api'   // ⬅️ use askMath here
 import MessageBubble from '@/components/MessageBubble'
 import SourceList from '@/components/SourceList'
 import Header from './components/Header'
@@ -25,7 +25,8 @@ export default function MathChatbot() {
     setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'user', content: q }])
     setLoading(true)
     try {
-      const res = await ask({ question: q, history: messages.slice(-10), top_k: 5, temperature: 0.1 })
+      // ⬇️ call the math endpoint
+      const res = await askMath({ question: q, history: messages.slice(-10), top_k: 5, temperature: 0.1 })
       setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: res.answer }])
       setSources(res.sources || [])
     } catch (e: any) {
@@ -71,9 +72,7 @@ export default function MathChatbot() {
 
   return (
     <div className="wrap">
-      {/* Custom header for Math */}
       <Header />
-
       <main>
         <section className="panel chat" style={{ background: 'linear-gradient(180deg, rgba(15,22,50,.08), rgba(15,22,50,.02))' }}>
           <div
@@ -84,13 +83,7 @@ export default function MathChatbot() {
             title="Drop files anywhere in the chat to upload"
           >
             {messages.map(m => (
-              <MessageBubble
-                key={m.id}
-                m={m}
-                // custom colors for math
-               
-              
-              />
+              <MessageBubble key={m.id} m={m} />
             ))}
             {loading && <div className="msg assistant">Calculating…</div>}
           </div>
@@ -128,7 +121,6 @@ export default function MathChatbot() {
           )}
         </section>
       </main>
-
       <footer>Math Assistant © {new Date().getFullYear()}</footer>
     </div>
   )

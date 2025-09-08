@@ -15,6 +15,9 @@ async function http<T>(path: string, opts: RequestInit = {}): Promise<T> {
 export async function ask(body: AskRequest): Promise<AskResponse> {
   return http('/api/ask', { method: 'POST', body: JSON.stringify(body) })
 }
+export async function askMath(body: AskRequest): Promise<AskResponse> {
+  return http('/api/math', { method: 'POST', body: JSON.stringify(body) })
+}
 export async function upload(file: File): Promise<{ ok: boolean; detail?: string }> {
   const BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
   const form = new FormData()
