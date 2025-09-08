@@ -84,3 +84,8 @@ academic_embeddings.pkl
 *.db
 *.sqlite3
 *.bin
+
+
+# Ignore all node_modules folders, including subfolders
+node_modules/
+**/node_modules/
