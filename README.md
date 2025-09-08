@@ -24,6 +24,11 @@ Rag-Pipeline/
 ├── rag_pipeline.py        # RAG wrapper used by the API
 ├── streamlit_app.py       # Streamlit front-end (web chat)
 ├── view_embeddings.py     # Inspect Chroma collection
+├── evaluation/  
+    ├── dashboard.py       # Streamlit UI
+│   ├── eval_rag.py        # Evaluate RAG responses
+│   ├── data.json          # Sample questions & references
+│   └── results.json       # Generated evaluation results
 ├── requirements.txt       # Dependencies
 └── README.md              # This file
 ```
@@ -92,7 +97,68 @@ streamlit run streamlit_app.py
 - Visit the app (usually): `http://localhost:8501`
 - In the sidebar, click **🔄 Check Connection** to verify the API is healthy.
 
-That’s it — ask questions about your PDFs!
+---
+
+## 🧪 Evaluation / Metrics
+
+You can evaluate your RAG pipeline responses against reference answers and inspect metrics like **faithfulness, context precision/recall, and answer similarity**.
+
+### 1) Prepare evaluation dataset
+
+- Create `evaluation/data.json` with questions (`user_input`) and reference answers (`reference`):
+
+```json
+[
+  {
+    "id": "q1",
+    "user_input": "What is the role of tokenization in large language models?",
+    "reference": "Tokenization breaks input text into smaller units called tokens, which are mapped into embeddings for neural network processing."
+  }
+]
+```
+
+- You can add multiple questions for batch evaluation.
+
+### 2) Run the evaluation script
+
+```bash
+python evaluation/eval_rag.py
+```
+
+- This will:
+  1. Pass each question through the RAG pipeline.
+  2. Collect the model’s responses and retrieved contexts.
+  3. Compute metrics: `faithfulness`, `context_precision`, `context_recall`, `answer_similarity`.
+  4. Save results to `evaluation/results.json`.
+
+### 3) Inspect evaluation results
+
+- Open `evaluation/results.json` to see a per-question metric breakdown:
+
+```json
+[
+  {
+    "user_input": "...",
+    "response": "...",
+    "reference": "...",
+    "retrieved_contexts": ["..."],
+    "faithfulness": 0.85,
+    "context_precision": 0.9,
+    "context_recall": 0.8,
+    "answer_similarity": 0.88
+  }
+]
+```
+
+### 4) Visualize metrics with Streamlit
+
+- Optionally, open `evaluation/dashboard.py` using Streamlit:
+
+```bash
+streamlit run evaluation/dashboard.py
+```
+
+- Provides interactive bar charts for **overall metrics** and **per-question evaluation**.
 
 ---
 
@@ -127,9 +193,7 @@ Optional third config for ingestion: `chromadbpdf.py`.
   curl http://localhost:8000/health
 
   # Ask a question
-  curl -X POST http://localhost:8000/chat \
-    -H 'Content-Type: application/json' \
-    -d '{"message": "What is supervised learning?", "student_name": "Alex"}'
+  curl -X POST http://localhost:8000/chat     -H 'Content-Type: application/json'     -d '{"message": "What is supervised learning?", "student_name": "Alex"}'
   ```
 
 ### API Endpoints
@@ -170,7 +234,7 @@ Optional third config for ingestion: `chromadbpdf.py`.
 
 1. **"Academic database not found" / empty answers**
    - Ensure PDFs are in `university_documents/` and run `python chromadbpdf.py`.
-2. ``** returns 503**
+2. **503 errors**
    - The RAG pipeline may not have initialized; check `.env`, ingestion, and API logs.
 3. **OpenAI errors**
    - Verify `OPENAI_API_KEY` and account credits; ensure your network allows outbound requests.
@@ -206,4 +270,3 @@ Shows total docs/chunks, sample text, and embedding stats.
 ## 📄 License
 
 MIT
-
